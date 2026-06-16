@@ -18,6 +18,7 @@ class BoothSalesApp:
         self.inspection_dict = {} 
         self.sold_serial_data = {}
         self.discount_data = {}
+        self.var_cash_payment = tk.BooleanVar(value=False)
 
         self.setup_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -376,6 +377,9 @@ class BoothSalesApp:
 
         ttk.Button(scan_frame, text="장바구니 추가", command=self.add_to_cart).grid(row=0, column=4, padx=10)
 
+        scan_frame.columnconfigure(5, weight=1)
+        ttk.Checkbutton(scan_frame, text="현금", variable=self.var_cash_payment).grid(row=0, column=6, padx=(10, 5), pady=5, sticky='e')
+
         cart_frame = ttk.Frame(self.tab_sales)
         cart_frame.pack(fill='both', expand=True, padx=10, pady=5)
 
@@ -557,7 +561,8 @@ class BoothSalesApp:
                 amt = qty * price
                 serial = str(item['serial']) if item['serial'] else ""
 
-                ws_sales.append([date_str, time_str, barcode, item['name'], qty, price, amt, serial, item.get('memo', '')])
+                sale_memo = "현금결제" if self.var_cash_payment.get() else item.get('memo', '')
+                ws_sales.append([date_str, time_str, barcode, item['name'], qty, price, amt, serial, sale_memo])
 
                 found_daily = False
                 for row in ws_daily.iter_rows(min_row=2):
@@ -599,6 +604,7 @@ class BoothSalesApp:
 
             wb.save(self.op_file_path)
             messagebox.showinfo("완료", "판매 기록이 완료되었습니다.\n(미등록 시리얼이 있었다면 자동으로 등록되었습니다.)")
+            self.var_cash_payment.set(False)
             self.clear_cart()
 
         except PermissionError:

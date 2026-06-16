@@ -721,25 +721,31 @@ class BoothSalesApp:
         frame = ttk.LabelFrame(self.tab_export, text="데이터 내보내기", padding=20)
         frame.pack(fill='x', padx=20, pady=20)
 
-        self.lbl_daily_total = ttk.Label(frame, text="오늘의 총 판매/환불 합계액: 0 원", font=("Arial", 12, "bold"), foreground="blue")
-        self.lbl_daily_total.grid(row=0, column=0, columnspan=2, pady=10, sticky='w')
+        today_str = datetime.now().strftime("%Y-%m-%d")
 
-        ttk.Button(frame, text="판매일보 생성 및 내보내기", command=self.export_daily_report).grid(row=1, column=0, pady=10, padx=10, sticky='w')
-        ttk.Label(frame, text="* 판매상세(반품/비고 포함) 및 품목별 집계가 포함된 새로운 엑셀을 생성합니다.", foreground="gray").grid(row=1, column=1, sticky='w')
+        self.lbl_daily_total = ttk.Label(frame, text="선택일 총 판매/환불 합계액: 0 원", font=("Arial", 12, "bold"), foreground="blue")
+        self.lbl_daily_total.grid(row=0, column=0, columnspan=3, pady=10, sticky='w')
+
+        ttk.Label(frame, text="판매일보 날짜:").grid(row=1, column=0, pady=10, padx=10, sticky='e')
+        self.entry_report_date = ttk.Entry(frame, width=15)
+        self.entry_report_date.insert(0, today_str)
+        self.entry_report_date.grid(row=1, column=1, pady=10, sticky='w')
+        ttk.Label(frame, text="예: 2026-06-16", foreground="gray").grid(row=1, column=2, sticky='w')
+
+        ttk.Button(frame, text="판매일보 생성 및 내보내기", command=self.export_daily_report).grid(row=2, column=0, pady=10, padx=10, sticky='w')
+        ttk.Label(frame, text="* 설정한 날짜의 판매상세(반품/비고 포함) 및 품목별 집계가 포함된 엑셀을 생성합니다.", foreground="gray").grid(row=2, column=1, columnspan=2, sticky='w')
 
     def export_daily_report(self):
         if not self.op_file_path or not os.path.exists(self.op_file_path):
             messagebox.showerror("오류", "운영 파일이 지정되지 않았거나 없습니다.")
             return
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".xlsx", 
-            filetypes=[("Excel files", "*.xlsx")], 
-            initialfile=f"판매일보_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        )
-        if not save_path: return
+        report_date = self.entry_report_date.get().strip() if hasattr(self, 'entry_report_date') else datetime.now().strftime("%Y-%m-%d")
+        try:
+            datetime.strptime(report_date, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showerror("오류", "판매일보 날짜는 YYYY-MM-DD 형식으로 입력해 주세요.\n예: 2026-06-16")
+            return
 
         try:
             wb_op = openpyxl.load_workbook(self.op_file_path, data_only=True)
@@ -750,10 +756,10 @@ class BoothSalesApp:
             ws_report_sales.title = "판매상세"
             ws_summary = wb_report.create_sheet("품목별집계")
 
-            summary_data = {} 
-            grand_total = 0  
-            today_sales_count = 0 
-            
+            summary_data = {}
+            grand_total = 0
+            selected_sales_count = 0
+
             headers = {cell.value: idx for idx, cell in enumerate(ws_sales[1]) if cell.value}
             idx_date = headers.get("판매일자", 0)
             idx_bcode = headers.get("바코드", 2)
@@ -763,34 +769,34 @@ class BoothSalesApp:
 
             for i, row in enumerate(ws_sales.iter_rows(values_only=True)):
                 row_list = list(row)
-                
-                if i == 0: 
+
+                if i == 0:
                     row_list.insert(3, "상품코드")
-                    if len(row_list) < 10: 
+                    if len(row_list) < 10:
                         while len(row_list) < 10:
                             row_list.append("")
                         row_list[9] = "비고"
                     ws_report_sales.append(row_list)
-                    continue 
-                
+                    continue
+
                 raw_date = row[idx_date]
                 if isinstance(raw_date, datetime):
                     sale_date = raw_date.strftime("%Y-%m-%d")
                 else:
                     sale_date = str(raw_date)[:10] if raw_date else ""
-                
-                if sale_date != today_str:
+
+                if sale_date != report_date:
                     continue
 
-                today_sales_count += 1
-                
+                selected_sales_count += 1
+
                 bcode = str(row[idx_bcode]) if row[idx_bcode] is not None else ""
                 name = row[idx_name] if row[idx_name] is not None else ""
-                
+
                 qty = self.safe_int(row[idx_qty])
                 amt = self.safe_int(row[idx_amt])
-                
-                # 판매금액은 현재 상품마스터 단가로 재계산하지 않고, 판매상세에 기록된 총액을 그대로 합산한다. 단가 변경 후에도 과거 판매금액을 보존하기 위함.
+
+                # 판매금액은 현재 상품마스터 단가로 재계산하지 않고, 판매상세에 기록된 총액을 그대로 합산한다.
                 grand_total += amt
 
                 item_code = ""
@@ -802,24 +808,34 @@ class BoothSalesApp:
 
                 if bcode not in summary_data:
                     summary_data[bcode] = {'item_code': item_code, 'name': name, 'qty': 0, 'amt': 0}
-                
+
                 summary_data[bcode]['qty'] += qty
                 summary_data[bcode]['amt'] += amt
 
-            if today_sales_count == 0:
-                messagebox.showwarning("안내", f"오늘({today_str}) 판매/반품 내역이 없습니다.")
+            if selected_sales_count == 0:
+                self.lbl_daily_total.config(text=f"{report_date} 총 판매/환불 합계액: 0 원")
+                messagebox.showinfo("안내", f"{report_date} 판매이력이 없습니다.")
+                return
+
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                initialfile=f"판매일보_{report_date.replace('-', '')}.xlsx"
+            )
+            if not save_path:
+                return
 
             ws_summary.append(["바코드", "상품코드", "상품명", "순판매수량", "순판매금액"])
             for bcode, data in summary_data.items():
                 ws_summary.append([bcode, data['item_code'], data['name'], data['qty'], data['amt']])
-            
-            ws_summary.append([])
-            ws_summary.append(["", "", "오늘의 순매출 총액", "", grand_total])
 
-            self.lbl_daily_total.config(text=f"오늘의 총 판매/환불 합계액: {grand_total:,} 원")
+            ws_summary.append([])
+            ws_summary.append(["", "", "선택일 순매출 총액", "", grand_total])
+
+            self.lbl_daily_total.config(text=f"{report_date} 총 판매/환불 합계액: {grand_total:,} 원")
 
             wb_report.save(save_path)
-            messagebox.showinfo("성공", f"오늘의 판매일보가 저장되었습니다.\n순매출 총액: {grand_total:,}원")
+            messagebox.showinfo("성공", f"{report_date} 판매일보가 저장되었습니다.\n순매출 총액: {grand_total:,}원")
 
         except Exception as e:
             messagebox.showerror("오류", f"리포트 생성 실패:\n{e}")

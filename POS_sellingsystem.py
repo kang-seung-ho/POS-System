@@ -7,7 +7,7 @@ import os
 class BoothSalesApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("다마스버터플라이코리아 매대판매 시스템")
+        self.root.title("매대판매 POS 시스템")
         self.root.geometry("900x700")
         
         # 메모리 데이터 저장소

@@ -19,6 +19,9 @@ class BoothSalesApp:
         self.sold_serial_data = {}
         self.discount_data = {}
         self.var_cash_payment = tk.BooleanVar(value=False)
+        self.saved_carts = []
+        self.next_saved_cart_no = 1
+        self.loaded_temp_cart_id = None
 
         self.setup_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -407,6 +410,8 @@ class BoothSalesApp:
         self.btn_complete.pack(side='right', padx=10)
 
         ttk.Button(pay_frame, text="장바구니 비우기", command=self.clear_cart).pack(side='right')
+        ttk.Button(pay_frame, text="임시저장 불러오기", command=self.open_saved_cart_window).pack(side='right', padx=5)
+        ttk.Button(pay_frame, text="장바구니 임시저장", command=self.save_current_cart_temporarily).pack(side='right', padx=5)
 
     def add_to_cart(self, event=None):
         if not self.op_file_path or not self.master_data:
@@ -533,6 +538,7 @@ class BoothSalesApp:
 
     def clear_cart(self):
         self.cart.clear()
+        self.loaded_temp_cart_id = None
         self.update_cart_ui()
 
     def complete_sale(self):
@@ -603,6 +609,8 @@ class BoothSalesApp:
                 ws_stock.append([b_code, b_data['name'], b_data['stock']])
 
             wb.save(self.op_file_path)
+            if self.loaded_temp_cart_id is not None:
+                self.delete_saved_cart_by_id(self.loaded_temp_cart_id)
             messagebox.showinfo("완료", "판매 기록이 완료되었습니다.\n(미등록 시리얼이 있었다면 자동으로 등록되었습니다.)")
             self.var_cash_payment.set(False)
             self.clear_cart()
@@ -743,6 +751,237 @@ class BoothSalesApp:
                         break
                         
                 self.update_cart_ui()
+
+    def get_next_saved_cart_no(self):
+        while any(cart_info['cart_no'] == self.next_saved_cart_no for cart_info in self.saved_carts):
+            self.next_saved_cart_no += 1
+        cart_no = self.next_saved_cart_no
+        self.next_saved_cart_no += 1
+        return cart_no
+
+    def clone_cart_items(self, cart_items):
+        return [dict(item) for item in cart_items]
+
+    def delete_saved_cart_by_id(self, cart_no):
+        before_count = len(self.saved_carts)
+        self.saved_carts = [cart_info for cart_info in self.saved_carts if cart_info['cart_no'] != cart_no]
+        if self.loaded_temp_cart_id == cart_no:
+            self.loaded_temp_cart_id = None
+        return len(self.saved_carts) < before_count
+
+    def enforce_saved_cart_limit(self):
+        while len(self.saved_carts) > 10:
+            removable = [cart_info for cart_info in self.saved_carts if not cart_info.get('pinned', False)]
+            if not removable:
+                return False
+            oldest = min(removable, key=lambda cart_info: cart_info['saved_at_dt'])
+            self.delete_saved_cart_by_id(oldest['cart_no'])
+        return True
+
+    def save_current_cart_temporarily(self):
+        if not self.cart:
+            messagebox.showwarning("알림", "임시저장할 장바구니가 비어 있습니다.")
+            return
+
+        if len(self.saved_carts) >= 10:
+            removable = [cart_info for cart_info in self.saved_carts if not cart_info.get('pinned', False)]
+            if not removable:
+                messagebox.showwarning("저장 불가", "임시저장 장바구니 10개가 모두 고정되어 있습니다.\n고정을 해제하거나 기존 장바구니를 삭제한 뒤 저장해 주세요.")
+                return
+            oldest = min(removable, key=lambda cart_info: cart_info['saved_at_dt'])
+            self.delete_saved_cart_by_id(oldest['cart_no'])
+
+        now = datetime.now()
+        cart_no = self.get_next_saved_cart_no()
+        total_amt = sum(self.safe_int(item.get('qty', 0)) * self.safe_int(item.get('price', 0)) for item in self.cart)
+        total_qty = sum(self.safe_int(item.get('qty', 0)) for item in self.cart)
+
+        self.saved_carts.append({
+            'cart_no': cart_no,
+            'saved_at_dt': now,
+            'saved_at': now.strftime("%Y-%m-%d %H:%M:%S"),
+            'items': self.clone_cart_items(self.cart),
+            'cash_payment': self.var_cash_payment.get(),
+            'pinned': False,
+            'total_qty': total_qty,
+            'total_amt': total_amt
+        })
+        self.enforce_saved_cart_limit()
+        messagebox.showinfo("완료", f"장바구니 #{cart_no}번으로 임시저장되었습니다.")
+
+    def find_saved_cart(self, cart_no):
+        for cart_info in self.saved_carts:
+            if cart_info['cart_no'] == cart_no:
+                return cart_info
+        return None
+
+    def load_saved_cart(self, cart_no, win=None):
+        cart_info = self.find_saved_cart(cart_no)
+        if not cart_info:
+            messagebox.showerror("오류", "선택한 임시저장 장바구니를 찾을 수 없습니다.", parent=win)
+            return
+
+        if self.cart:
+            if not messagebox.askyesno("확인", "현재 장바구니를 선택한 임시저장 장바구니로 교체하시겠습니까?", parent=win):
+                return
+
+        for item in cart_info['items']:
+            bcode = str(item.get('barcode', ''))
+            if bcode not in self.master_data:
+                messagebox.showerror("불러오기 불가", f"현재 상품마스터에 없는 바코드가 포함되어 있습니다.\n바코드: {bcode}", parent=win)
+                return
+
+        shortage_messages = []
+        qty_by_barcode = {}
+        for item in cart_info['items']:
+            bcode = str(item.get('barcode', ''))
+            qty_by_barcode[bcode] = qty_by_barcode.get(bcode, 0) + self.safe_int(item.get('qty', 0))
+
+        for bcode, qty in qty_by_barcode.items():
+            current_stock = self.master_data.get(bcode, {}).get('stock', 0)
+            if qty > current_stock:
+                item_name = self.master_data.get(bcode, {}).get('name', bcode)
+                shortage_messages.append(f"{item_name}: 요청 {qty}개 / 현재재고 {current_stock}개")
+
+        if shortage_messages:
+            messagebox.showwarning("재고 부족", "현재 재고보다 많은 수량이 포함되어 불러올 수 없습니다.\n\n" + "\n".join(shortage_messages), parent=win)
+            return
+
+        self.cart = self.clone_cart_items(cart_info['items'])
+        self.loaded_temp_cart_id = cart_no
+        self.var_cash_payment.set(bool(cart_info.get('cash_payment', False)))
+        self.update_cart_ui()
+        messagebox.showinfo("완료", f"장바구니 #{cart_no}번을 불러왔습니다.\n판매완료 처리 시 임시저장 목록에서 자동 삭제됩니다.", parent=win)
+        if win:
+            win.destroy()
+
+    def toggle_saved_cart_pin(self, cart_no, refresh_callback=None, win=None):
+        cart_info = self.find_saved_cart(cart_no)
+        if not cart_info:
+            messagebox.showerror("오류", "선택한 임시저장 장바구니를 찾을 수 없습니다.", parent=win)
+            return
+        cart_info['pinned'] = not cart_info.get('pinned', False)
+        if refresh_callback:
+            refresh_callback()
+
+    def open_saved_cart_window(self):
+        if not self.saved_carts:
+            messagebox.showinfo("안내", "임시저장된 장바구니가 없습니다.")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("임시저장 장바구니")
+        win.geometry("850x480")
+        win.grab_set()
+
+        main_frame = ttk.Frame(win, padding=10)
+        main_frame.pack(fill='both', expand=True)
+
+        left_frame = ttk.LabelFrame(main_frame, text="임시저장 목록", padding=10)
+        left_frame.pack(side='left', fill='both', expand=False, padx=(0, 8))
+
+        right_frame = ttk.LabelFrame(main_frame, text="장바구니 내용", padding=10)
+        right_frame.pack(side='right', fill='both', expand=True)
+
+        list_cols = ("번호", "고정", "저장시간", "수량", "금액")
+        tree_list = ttk.Treeview(left_frame, columns=list_cols, show='headings', height=14)
+        widths = {"번호": 60, "고정": 50, "저장시간": 145, "수량": 55, "금액": 85}
+        for col in list_cols:
+            tree_list.heading(col, text=col)
+            tree_list.column(col, width=widths[col], anchor='center')
+        tree_list.pack(fill='both', expand=True)
+
+        detail_cols = ("바코드", "상품명", "수량", "단가", "총액", "시리얼")
+        tree_detail = ttk.Treeview(right_frame, columns=detail_cols, show='headings', height=14)
+        detail_widths = {"바코드": 110, "상품명": 180, "수량": 55, "단가": 75, "총액": 85, "시리얼": 120}
+        for col in detail_cols:
+            tree_detail.heading(col, text=col)
+            tree_detail.column(col, width=detail_widths[col], anchor='center')
+        tree_detail.pack(fill='both', expand=True)
+
+        selected_cart_no = {'value': None}
+
+        def refresh_list():
+            for row in tree_list.get_children():
+                tree_list.delete(row)
+            sorted_carts = sorted(self.saved_carts, key=lambda cart_info: cart_info['saved_at_dt'])
+            for cart_info in sorted_carts:
+                tree_list.insert("", tk.END, iid=str(cart_info['cart_no']), values=(
+                    cart_info['cart_no'],
+                    "고정" if cart_info.get('pinned', False) else "",
+                    cart_info['saved_at'],
+                    cart_info.get('total_qty', 0),
+                    f"{cart_info.get('total_amt', 0):,}"
+                ))
+            if selected_cart_no['value'] is not None and self.find_saved_cart(selected_cart_no['value']):
+                tree_list.selection_set(str(selected_cart_no['value']))
+
+        def show_detail(cart_no):
+            for row in tree_detail.get_children():
+                tree_detail.delete(row)
+            cart_info = self.find_saved_cart(cart_no)
+            if not cart_info:
+                return
+            selected_cart_no['value'] = cart_no
+            for item in cart_info['items']:
+                qty = self.safe_int(item.get('qty', 0))
+                price = self.safe_int(item.get('price', 0))
+                tree_detail.insert("", tk.END, values=(
+                    item.get('barcode', ''),
+                    item.get('name', ''),
+                    qty,
+                    f"{price:,}",
+                    f"{qty * price:,}",
+                    item.get('serial', '')
+                ))
+
+        def on_list_select(event=None):
+            selected = tree_list.selection()
+            if not selected:
+                return
+            show_detail(int(selected[0]))
+
+        def load_selected():
+            if selected_cart_no['value'] is None:
+                messagebox.showwarning("알림", "불러올 장바구니 번호를 선택하세요.", parent=win)
+                return
+            load_saved_cart(selected_cart_no['value'], win)
+
+        def pin_selected():
+            if selected_cart_no['value'] is None:
+                messagebox.showwarning("알림", "고정할 장바구니 번호를 선택하세요.", parent=win)
+                return
+            self.toggle_saved_cart_pin(selected_cart_no['value'], refresh_list, win)
+
+        def delete_selected():
+            if selected_cart_no['value'] is None:
+                messagebox.showwarning("알림", "삭제할 장바구니 번호를 선택하세요.", parent=win)
+                return
+            if not messagebox.askyesno("확인", f"장바구니 #{selected_cart_no['value']}번을 삭제하시겠습니까?", parent=win):
+                return
+            self.delete_saved_cart_by_id(selected_cart_no['value'])
+            selected_cart_no['value'] = None
+            for row in tree_detail.get_children():
+                tree_detail.delete(row)
+            refresh_list()
+            if not self.saved_carts:
+                win.destroy()
+
+        tree_list.bind('<<TreeviewSelect>>', on_list_select)
+        tree_list.bind('<Double-1>', lambda e: load_selected())
+
+        btn_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btn_frame.pack(fill='x')
+        ttk.Button(btn_frame, text="선택 장바구니 불러오기", command=load_selected).pack(side='right', padx=5)
+        ttk.Button(btn_frame, text="고정/해제", command=pin_selected).pack(side='right', padx=5)
+        ttk.Button(btn_frame, text="삭제", command=delete_selected).pack(side='right', padx=5)
+        ttk.Label(btn_frame, text="* 목록에서 번호를 클릭하면 오른쪽에 내용이 표시됩니다. 더블클릭하면 불러옵니다.", foreground="gray").pack(side='left')
+
+        refresh_list()
+        first = tree_list.get_children()
+        if first:
+            tree_list.selection_set(first[0])
+            show_detail(int(first[0]))
 
     def handle_barcode_enter(self, event):
         barcode = self.entry_barcode.get().strip()

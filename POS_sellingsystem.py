@@ -665,14 +665,60 @@ class BoothSalesApp:
             
         column = self.tree_cart.identify_column(event.x)
         row_id = self.tree_cart.identify_row(event.y)
-        
-        if column == '#5' and row_id:
-            values = self.tree_cart.item(row_id, 'values')
-            clicked_barcode = str(values[0])
-            item_name = str(values[1])
-            clicked_serial = str(values[6]) if values[6] and values[6] != 'None' else ""
-            
-            current_price = int(values[4])
+        if not row_id: return
+
+        values = self.tree_cart.item(row_id, 'values')
+        clicked_barcode = str(values[0])
+        item_name = str(values[1])
+        clicked_serial = str(values[6]) if values[6] and values[6] != 'None' else ""
+
+        # 수량 더블클릭: 장바구니 수량 변경
+        if column == '#3':
+            current_qty = self.safe_int(values[2])
+
+            new_qty = simpledialog.askinteger(
+                "수량 수정",
+                f"[{item_name}]의 수량을 입력하세요:",
+                initialvalue=current_qty,
+                parent=self.root,
+                minvalue=1
+            )
+
+            if new_qty is None:
+                return
+
+            # 시리얼 상품은 1개당 시리얼 1개가 필요하므로, 기존 구조상 수량 변경을 제한합니다.
+            if clicked_serial and new_qty != 1:
+                messagebox.showwarning("수량 변경 불가", "시리얼이 있는 상품은 수량을 1개로만 처리할 수 있습니다.\n추가 수량은 시리얼별로 장바구니에 추가해 주세요.")
+                return
+
+            current_stock = self.master_data.get(clicked_barcode, {}).get('stock', 0)
+            other_cart_qty = 0
+            target_item = None
+
+            for item in self.cart:
+                item_serial = str(item['serial']) if item['serial'] else ""
+                is_target = str(item['barcode']) == clicked_barcode and item_serial == clicked_serial
+                if is_target and target_item is None:
+                    target_item = item
+                elif str(item['barcode']) == clicked_barcode:
+                    other_cart_qty += self.safe_int(item.get('qty', 0))
+
+            if target_item is None:
+                messagebox.showerror("오류", "수정할 장바구니 품목을 찾을 수 없습니다.")
+                return
+
+            if other_cart_qty + new_qty > current_stock:
+                messagebox.showwarning("재고 초과", f"남은 재고수량({current_stock}개)보다 많이 입력했습니다.")
+                return
+
+            target_item['qty'] = new_qty
+            self.update_cart_ui()
+            return
+
+        # 단가 더블클릭: 장바구니 단가 변경
+        if column == '#5':
+            current_price = self.safe_int(values[4])
             
             new_price = simpledialog.askinteger(
                 "단가 수정", 

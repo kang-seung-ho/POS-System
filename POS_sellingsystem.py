@@ -942,21 +942,45 @@ class BoothSalesApp:
             show_detail(int(selected[0]))
 
         def load_selected():
+            selected = tree_list.selection()
+            if selected:
+                try:
+                    selected_cart_no['value'] = int(selected[0])
+                except ValueError:
+                    selected_cart_no['value'] = None
+
             if selected_cart_no['value'] is None:
                 messagebox.showwarning("알림", "불러올 장바구니 번호를 선택하세요.", parent=win)
                 return
-            load_saved_cart(selected_cart_no['value'], win)
+
+            self.load_saved_cart(selected_cart_no['value'], win)
 
         def pin_selected():
+            selected = tree_list.selection()
+            if selected:
+                try:
+                    selected_cart_no['value'] = int(selected[0])
+                except ValueError:
+                    selected_cart_no['value'] = None
+
             if selected_cart_no['value'] is None:
                 messagebox.showwarning("알림", "고정할 장바구니 번호를 선택하세요.", parent=win)
                 return
+
             self.toggle_saved_cart_pin(selected_cart_no['value'], refresh_list, win)
 
         def delete_selected():
+            selected = tree_list.selection()
+            if selected:
+                try:
+                    selected_cart_no['value'] = int(selected[0])
+                except ValueError:
+                    selected_cart_no['value'] = None
+
             if selected_cart_no['value'] is None:
                 messagebox.showwarning("알림", "삭제할 장바구니 번호를 선택하세요.", parent=win)
                 return
+
             if not messagebox.askyesno("확인", f"장바구니 #{selected_cart_no['value']}번을 삭제하시겠습니까?", parent=win):
                 return
             self.delete_saved_cart_by_id(selected_cart_no['value'])
